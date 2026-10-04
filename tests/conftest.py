@@ -1,50 +1,18 @@
-# tests/conftest.py
 import allure
 import pytest
 import requests
-import random
-import string
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from locators.base_locators import BaseLocators
 
 from pages.main_page import MainPage
-from locators.base_locators import BaseLocators
-from utils.urls import Urls
+from utils.api_client import UserApiClient
+from utils.urls import Urls, ApiUrls
 
-API_BASE = "https://stellarburgers.education-services.ru"
-
-def _generate_email() -> str:
-    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    return f"ui_test_{suffix}@yandex.ru"
-
-def _register_user_via_api() -> dict:
-    """Создаёт уникального пользователя через API и возвращает его данные."""
-    email = _generate_email()
-    password = "password123"
-    name = "UITestUser"
-
-    response = requests.post(
-        f"{API_BASE}/api/auth/register",
-        json={"email": email, "password": password, "name": name},
-    )
-    body = response.json()
-    return {
-        "email": email,
-        "password": password,
-        "name": name,
-        "access_token": body.get("accessToken"),
-    }
-
-def _delete_user_via_api(access_token: str):
-    """Удаляет пользователя через API (в постусловии)."""
-    requests.delete(
-        f"{API_BASE}/api/auth/user",
-        headers={"Authorization": access_token},
-    )
 
 # ===== Фикстуры браузера =====
 
@@ -53,10 +21,12 @@ def _chrome_driver():
     options.add_argument("--window-size=1920,1080")
     return webdriver.Chrome(options=options)
 
+
 def _firefox_driver():
     options = FirefoxOptions()
     options.binary_location = "/snap/firefox/current/usr/lib/firefox/firefox"
     return webdriver.Firefox(options=options)
+
 
 @pytest.fixture(params=["chrome", "firefox"], scope="function")
 def driver(request):
@@ -67,56 +37,77 @@ def driver(request):
     with allure.step("Закрытие драйвера"):
         drv.quit()
 
-# ===== Фикстура авторизованного пользователя =====
+
+# ===== Фикстуры данных =====
 
 @pytest.fixture
-def authorized_user(driver):
-    """Создаёт уникального пользователя через API, логинит через UI."""
+def user_data():
+    """Только данные пользователя, без регистрации."""
+    return {
+        "email": UserApiClient.generate_email(),
+        "password": "password123",
+        "name": "UITestUser",
+    }
 
+
+@pytest.fixture
+def registered_user(user_data):
+    """Создаёт пользователя через API и удаляет в постусловии."""
     with allure.step("Предусловие: создание уникального пользователя через API"):
-        user = _register_user_via_api()
+        body = UserApiClient.register(**user_data)
+        access_token = body.get("accessToken")
 
-    with allure.step(f"Авторизация через UI: {user['email']}"):
-        main_page = MainPage(driver)
-        main_page.open_main()
-        main_page.click(BaseLocators.PERSONAL_ACCOUNT_BUTTON)
-
-        # Ждём появления формы логина — поле Email имеет name="name" (!)
-        email_input = WebDriverWait(driver, 10).until(EC.visibility_of_element_located(
-            (By.XPATH, "//label[text()='Email']/following-sibling::input"))
-            )
-        email_input.send_keys(user["email"])
-
-        # Поле пароля — стандартное, name="Пароль"
-        password_input = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.XPATH, "//input[@type='password']"))
-            )
-        password_input.send_keys(user["password"])
-
-        # Кнопка «Войти»
-        driver.find_element(By.XPATH, "//button[text()='Войти']").click()
-
-        # Ждём редиректа на главную
-        WebDriverWait(driver, 10).until(EC.url_to_be(f"{API_BASE}/"))
-
-    yield user
+    yield {**user_data, "access_token": access_token}
 
     with allure.step("Постусловие: удаление пользователя через API"):
-        _delete_user_via_api(user["access_token"])
+        UserApiClient.delete(access_token)
 
-def _get_last_order_number(access_token: str) -> str:
-    """Получает номер последнего заказа пользователя через API.
-    Возвращает номер без ведущих нулей (как в UI ленты)."""
-    response = requests.get(
-        f"{API_BASE}/api/orders",
-        headers={"Authorization": access_token},
-        timeout=15,
-    )
-    body = response.json()
-    orders = body.get("orders", [])
-    if not orders:
-        raise AssertionError("У пользователя нет заказов — заказ не создался")
 
-    # Первый в списке — самый свежий (сервер сортирует по updatedAt desc)
-    last_order = orders[0]
-    return str(last_order["number"]).lstrip("0")
+@pytest.fixture
+def authorized_user(driver, registered_user):
+    """Авторизует пользователя через API и подставляет токены в localStorage.
+
+    Обходит UI-логин, который не работает из-за особенностей фронтенда.
+    Токены в localStorage React подхватывает автоматически после refresh.
+    """
+    with allure.step("Авторизация через API"):
+        response = requests.post(
+            ApiUrls.LOGIN,
+            json={
+                "email": registered_user["email"],
+                "password": registered_user["password"],
+            },
+            timeout=15,
+        )
+        body = response.json()
+        assert response.status_code == 200, f"API-логин упал: {body}"
+
+        access_token = body["accessToken"]   # "Bearer eyJ..."
+        refresh_token = body["refreshToken"]
+
+    with allure.step("Подстановка токенов в localStorage"):
+        driver.get(Urls.BASE_URL)
+
+        driver.execute_script(
+            "window.localStorage.setItem('accessToken', arguments[0]);",
+            access_token,
+        )
+        driver.execute_script(
+            "window.localStorage.setItem('refreshToken', arguments[0]);",
+            refresh_token,
+        )
+
+        # Перезагружаем страницу — React читает токены из localStorage
+        driver.refresh()
+
+    with allure.step("Проверка, что пользователь авторизован"):
+        WebDriverWait(driver, 10).until(
+            EC.invisibility_of_element_located(BaseLocators.LOGIN_SUBMIT_BUTTON),
+            message=f"Логин не прошёл. URL: {driver.current_url}",
+        )
+
+    yield {
+        **registered_user,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }

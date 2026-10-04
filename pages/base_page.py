@@ -4,8 +4,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 class BasePage:
-    """Базовый класс для всех Page Object. Содержит обёртки над действиями Selenium."""
-
     def __init__(self, driver):
         self.driver = driver
 
@@ -24,7 +22,6 @@ class BasePage:
         element = WebDriverWait(self.driver, timeout).until(
             EC.element_to_be_clickable(locator)
         )
-        # JS-клик обходит перекрытие другими элементами
         self.driver.execute_script("arguments[0].click();", element)
 
     @allure.step("Получить текст элемента: {locator}")
@@ -47,7 +44,6 @@ class BasePage:
         )
 
     def is_element_present(self, locator, timeout: int = 5) -> bool:
-        """Проверка наличия элемента без падения."""
         try:
             WebDriverWait(self.driver, timeout).until(
                 EC.presence_of_element_located(locator)
@@ -55,3 +51,29 @@ class BasePage:
             return True
         except Exception:
             return False
+
+    @allure.step("Получить текущий URL")
+    def get_current_url(self) -> str:
+        return self.driver.current_url
+
+    @allure.step("Дождаться, что URL содержит: {part}")
+    def wait_url_contains(self, part: str, timeout: int = 10):
+        return WebDriverWait(self.driver, timeout).until(
+            EC.url_contains(part)
+        )
+
+    @allure.step("Дождаться условия: {condition}")
+    def wait_until(self, condition, timeout: int = 15, message: str = ""):
+        """Обёртка над WebDriverWait для нестандартных ожиданий."""
+        return WebDriverWait(self.driver, timeout).until(condition, message=message)
+
+    @allure.step("Выполнить JS: {script}")
+    def execute_script(self, script: str, *args):
+        return self.driver.execute_script(script, *args)
+
+    @allure.step("Найти все элементы: {locator}")
+    def find_elements(self, locator):
+        return self.driver.find_elements(*locator)
+
+    def is_enabled(self, locator) -> bool:
+        return self.find(locator).is_enabled()
