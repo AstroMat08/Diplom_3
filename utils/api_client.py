@@ -22,7 +22,9 @@ class UserApiClient:
             timeout=15,
         )
         body = response.json()
-        assert response.status_code == 200, f"Не удалось создать пользователя: {body}"
+
+        if response.status_code != 200:
+            raise RuntimeError(f"Не удалось создать пользователя: status={response.status_code}, body={body}")
         return body
 
     @staticmethod

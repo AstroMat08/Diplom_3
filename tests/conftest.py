@@ -80,9 +80,11 @@ def authorized_user(driver, registered_user):
             timeout=15,
         )
         body = response.json()
-        assert response.status_code == 200, f"API-логин упал: {body}"
 
-        access_token = body["accessToken"]   # "Bearer eyJ..."
+        if response.status_code != 200:
+            raise RuntimeError(f"API-логин упал: status={response.status_code}, body={body}")
+
+        access_token = body["accessToken"]
         refresh_token = body["refreshToken"]
 
     with allure.step("Подстановка токенов в localStorage"):
@@ -106,8 +108,8 @@ def authorized_user(driver, registered_user):
             message=f"Логин не прошёл. URL: {driver.current_url}",
         )
 
-    yield {
-        **registered_user,
-        "access_token": access_token,
+    return {
+        **registered_user, 
+        "access_token": access_token, 
         "refresh_token": refresh_token,
-    }
+        }
